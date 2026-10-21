@@ -1,0 +1,20 @@
+# Local machine configuration
+local.properties
+.idea/
+*.iml
+
+# Gradle and Android build output
+.gradle/
+build/
+**/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Generated packages
+*.apk
+*.aab
+
+# Operating system files
+.DS_Store
+Thumbs.db
