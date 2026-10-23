@@ -49,7 +49,9 @@ macOS 或 Linux：
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-将 APK 传到 Android 设备后即可安装。调试版 APK 仅用于本地安装和验证。
+## 下载 APK
+
+可直接下载仓库中的 [多秒表计时器 v1.0 安装包](releases/MultiStopwatch-v1.0.apk)。这是调试签名版本，适合本地安装和验证。
 
 ## 开源许可
 
