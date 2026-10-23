@@ -3,6 +3,7 @@ package com.codex.multistopwatch;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
@@ -15,8 +16,12 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Editable;
+import android.text.InputFilter;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -46,6 +51,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 public class MainActivity extends Activity {
     private static final String PREFS = "multi_stopwatch_settings";
@@ -57,7 +64,10 @@ public class MainActivity extends Activity {
     private static final String PREF_COMPACT_LIST = "compact_list";
     private static final String PREF_FONT_SCALE = "font_scale";
     private static final int MAX_STOPWATCHES = 7;
+    private static final int MAX_LAPS = 50;
+    private static final int MAX_NOTE_LENGTH = 1000;
     private static final int REQUEST_EXPORT_LOGS = 1001;
+    private static final int REQUEST_EXPORT_STOPWATCHES = 1002;
     private static final long LOG_RETENTION_MILLIS = 30L * 24 * 60 * 60 * 1000;
     private static final long TRASH_RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000;
     private static final long TIMER_REFRESH_INTERVAL_MILLIS = 16;
@@ -91,7 +101,9 @@ public class MainActivity extends Activity {
     private Button addButton;
     private Button themeButton;
     private Button exportButton;
+    private Button stopwatchExportButton;
     private Button trashButton;
+    private List<StopwatchItem> pendingStopwatchExport;
 
     private int themeColor = Color.rgb(47, 125, 255);
     private boolean darkMode = false;
@@ -209,7 +221,12 @@ public class MainActivity extends Activity {
         titleBlock.addView(summaryView);
 
         themeButton = createButton("界面");
-        titleRow.addView(themeButton, new LinearLayout.LayoutParams(dp(78), dp(42)));
+        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(68), dp(42));
+        themeParams.setMargins(dp(4), 0, dp(4), 0);
+        titleRow.addView(themeButton, themeParams);
+
+        stopwatchExportButton = createButton("导出");
+        titleRow.addView(stopwatchExportButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
 
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setGravity(Gravity.CENTER);
@@ -268,6 +285,7 @@ public class MainActivity extends Activity {
 
         addButton.setOnClickListener(v -> addStopwatch());
         exportButton.setOnClickListener(v -> exportRecentLogs());
+        stopwatchExportButton.setOnClickListener(v -> showStopwatchExportDialog());
         trashButton.setOnClickListener(v -> showTrashDialog());
         themeButton.setOnClickListener(v -> showThemeDialog());
 
@@ -473,6 +491,13 @@ public class MainActivity extends Activity {
     }
 
     private void addLap(StopwatchItem item) {
+        if (item.laps.size() >= MAX_LAPS) {
+            Toast.makeText(this, "每个秒表最多记录 50 圈", Toast.LENGTH_SHORT).show();
+            if (adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+            return;
+        }
         long elapsed = item.elapsedMillis(now());
         if (elapsed <= 0) {
             return;
@@ -506,6 +531,92 @@ public class MainActivity extends Activity {
                 .setTitle(item.name + " · 圈速记录")
                 .setMessage(builder.toString())
                 .setPositiveButton("关闭", null)
+                .show();
+    }
+
+    private void showNoteDialog(StopwatchItem item) {
+        String originalNote = item.note;
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), dp(8), dp(18), 0);
+
+        EditText input = new EditText(this);
+        input.setGravity(Gravity.TOP | Gravity.START);
+        input.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        input.setMinLines(5);
+        input.setMaxLines(10);
+        input.setFilters(new InputFilter[]{new InputFilter.LengthFilter(MAX_NOTE_LENGTH)});
+        input.setText(item.note);
+        input.setSelection(input.length());
+        panel.addView(input, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView counter = dialogLabel(input.length() + "/" + MAX_NOTE_LENGTH);
+        counter.setGravity(Gravity.END);
+        panel.addView(counter);
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                counter.setText(s.length() + "/" + MAX_NOTE_LENGTH);
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+            }
+        });
+
+        AlertDialog noteDialog = new AlertDialog.Builder(this)
+                .setTitle(item.name + " · 笔记")
+                .setView(panel)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", (dialog, which) -> {
+                    String note = input.getText().toString();
+                    if (!item.note.equals(note)) {
+                        item.note = note;
+                        addLog(item.name, "编辑笔记", "字数 " + note.length());
+                        saveStopwatches();
+                        adapter.notifyDataSetChanged();
+                    }
+                })
+                .create();
+        noteDialog.setCancelable(false);
+        noteDialog.setCanceledOnTouchOutside(false);
+        noteDialog.setOnKeyListener((dialog, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_BACK) {
+                if (event.getAction() == KeyEvent.ACTION_UP) {
+                    requestCloseNoteDialog(noteDialog, originalNote, input);
+                }
+                return true;
+            }
+            return false;
+        });
+        noteDialog.show();
+        noteDialog.getButton(DialogInterface.BUTTON_NEGATIVE).setOnClickListener(v ->
+                requestCloseNoteDialog(noteDialog, originalNote, input));
+    }
+
+    private void requestCloseNoteDialog(
+            AlertDialog noteDialog,
+            String originalNote,
+            EditText input
+    ) {
+        if (originalNote.equals(input.getText().toString())) {
+            noteDialog.dismiss();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("放弃未保存的笔记？")
+                .setMessage("本次修改尚未保存。选择“不保存退出”将丢弃这些内容。")
+                .setNegativeButton("继续编辑", null)
+                .setPositiveButton("不保存退出", (dialog, which) -> noteDialog.dismiss())
                 .show();
     }
 
@@ -642,6 +753,7 @@ public class MainActivity extends Activity {
         styleButton(exportButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
         styleButton(trashButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
         styleButton(themeButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+        styleButton(stopwatchExportButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
     }
 
     private void styleButton(Button button, int background, int foreground) {
@@ -730,6 +842,7 @@ public class MainActivity extends Activity {
         JSONObject object = new JSONObject();
         object.put("id", item.id);
         object.put("name", item.name);
+        object.put("note", item.note);
         object.put("color", item.color);
         object.put("accumulatedMillis", item.accumulatedMillis);
         object.put("running", item.running);
@@ -752,12 +865,13 @@ public class MainActivity extends Activity {
                 object.optString("name", defaultName),
                 object.optInt("color", STOPWATCH_COLORS[0])
         );
+        item.note = limitNoteLength(object.optString("note", ""));
         item.accumulatedMillis = Math.max(0, object.optLong("accumulatedMillis", 0));
         item.running = object.optBoolean("running", false);
         item.startedAtMillis = object.optLong("startedAtMillis", 0);
         JSONArray laps = object.optJSONArray("laps");
         if (laps != null) {
-            for (int i = 0; i < laps.length(); i++) {
+            for (int i = 0; i < laps.length() && item.laps.size() < MAX_LAPS; i++) {
                 JSONObject lapObject = laps.optJSONObject(i);
                 if (lapObject != null) {
                     item.laps.add(new Lap(
@@ -1048,6 +1162,17 @@ public class MainActivity extends Activity {
         target.append(value);
     }
 
+    private String limitNoteLength(String note) {
+        if (note == null || note.length() <= MAX_NOTE_LENGTH) {
+            return note == null ? "" : note;
+        }
+        int end = MAX_NOTE_LENGTH;
+        if (Character.isHighSurrogate(note.charAt(end - 1))) {
+            end--;
+        }
+        return note.substring(0, end);
+    }
+
     private int parseColor(String raw) {
         String value = raw.trim();
         if (!value.startsWith("#")) {
@@ -1199,15 +1324,100 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showStopwatchExportDialog() {
+        if (stopwatches.isEmpty()) {
+            Toast.makeText(this, "当前没有可导出的秒表", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        LinearLayout choices = new LinearLayout(this);
+        choices.setOrientation(LinearLayout.VERTICAL);
+        choices.setPadding(dp(18), dp(4), dp(18), dp(4));
+        List<CheckBox> checkBoxes = new ArrayList<>();
+        List<StopwatchItem> availableItems = new ArrayList<>();
+        for (StopwatchItem item : stopwatches) {
+            CheckBox checkBox = new CheckBox(this);
+            checkBox.setText(item.name + (item.running ? "（运行中，不可导出）" : ""));
+            checkBox.setEnabled(!item.running);
+            checkBox.setTextColor(textColor);
+            checkBoxes.add(checkBox);
+            availableItems.add(item);
+            choices.addView(checkBox, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+        }
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.addView(choices);
+        new AlertDialog.Builder(this)
+                .setTitle("选择要导出的秒表")
+                .setMessage("圈速将按秒写入 Excel 表格；运行中的秒表不可导出。")
+                .setView(scrollView)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("导出 Excel", (dialog, which) -> {
+                    List<StopwatchItem> selected = new ArrayList<>();
+                    for (int i = 0; i < checkBoxes.size(); i++) {
+                        StopwatchItem item = availableItems.get(i);
+                        if (checkBoxes.get(i).isChecked() && !item.running) {
+                            selected.add(snapshotForExport(item));
+                        }
+                    }
+                    if (selected.isEmpty()) {
+                        Toast.makeText(this, "请至少选择一个已暂停的秒表", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    createStopwatchExport(selected);
+                })
+                .show();
+    }
+
+    private StopwatchItem snapshotForExport(StopwatchItem source) {
+        StopwatchItem copy = new StopwatchItem(source.id, source.name, source.color);
+        copy.note = source.note;
+        copy.accumulatedMillis = source.elapsedMillis(now());
+        for (Lap lap : source.laps) {
+            copy.laps.add(new Lap(lap.number, lap.totalMillis, lap.splitMillis));
+        }
+        return copy;
+    }
+
+    private void createStopwatchExport(List<StopwatchItem> selected) {
+        pendingStopwatchExport = selected;
+        addLog("应用", "导出秒表圈速", "导出 " + selected.size() + " 个秒表");
+        SimpleDateFormat fileDate = new SimpleDateFormat("yyyyMMdd", Locale.ROOT);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        intent.putExtra(Intent.EXTRA_TITLE, "秒表圈速_" + fileDate.format(new Date()) + ".xlsx");
+        try {
+            startActivityForResult(intent, REQUEST_EXPORT_STOPWATCHES);
+        } catch (ActivityNotFoundException ex) {
+            pendingStopwatchExport = null;
+            Toast.makeText(this, "未找到可用的文件保存应用", Toast.LENGTH_LONG).show();
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_EXPORT_LOGS || resultCode != RESULT_OK || data == null) {
+        if (requestCode != REQUEST_EXPORT_LOGS && requestCode != REQUEST_EXPORT_STOPWATCHES) {
+            return;
+        }
+        if (resultCode != RESULT_OK || data == null) {
+            if (requestCode == REQUEST_EXPORT_STOPWATCHES) {
+                pendingStopwatchExport = null;
+            }
             return;
         }
         Uri uri = data.getData();
         if (uri == null) {
-            Toast.makeText(this, "无法创建日志文件", Toast.LENGTH_LONG).show();
+            pendingStopwatchExport = null;
+            Toast.makeText(this, "无法创建导出文件", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (requestCode == REQUEST_EXPORT_STOPWATCHES) {
+            writeStopwatchWorkbook(uri);
             return;
         }
         try (OutputStream output = getContentResolver().openOutputStream(uri)) {
@@ -1221,6 +1431,212 @@ public class MainActivity extends Activity {
         } catch (IOException ex) {
             Toast.makeText(this, "导出失败，请重新选择保存位置", Toast.LENGTH_LONG).show();
         }
+    }
+
+    private void writeStopwatchWorkbook(Uri uri) {
+        List<StopwatchItem> selected = pendingStopwatchExport;
+        pendingStopwatchExport = null;
+        if (selected == null || selected.isEmpty()) {
+            Toast.makeText(this, "没有可写入的秒表数据", Toast.LENGTH_LONG).show();
+            return;
+        }
+        try (OutputStream output = getContentResolver().openOutputStream(uri)) {
+            if (output == null) {
+                throw new IOException("Unable to open selected file");
+            }
+            ZipOutputStream workbook = new ZipOutputStream(output);
+            writeZipEntry(workbook, "[Content_Types].xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                            + "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                            + "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                            + "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+                            + "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
+                            + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+                            + "<Override PartName=\"/xl/styles.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/>"
+                            + "</Types>");
+            writeZipEntry(workbook, "_rels/.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                            + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                            + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+                            + "</Relationships>");
+            writeZipEntry(workbook, "xl/workbook.xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                            + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
+                            + "<bookViews><workbookView xWindow=\"0\" yWindow=\"0\" windowWidth=\"16000\" windowHeight=\"9000\"/></bookViews>"
+                            + "<sheets><sheet name=\"圈速秒数\" sheetId=\"1\" r:id=\"rId1\"/></sheets>"
+                            + "</workbook>");
+            writeZipEntry(workbook, "xl/_rels/workbook.xml.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                            + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                            + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
+                            + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+                            + "</Relationships>");
+            writeZipEntry(workbook, "xl/styles.xml", stopwatchWorkbookStylesXml());
+            writeZipEntry(workbook, "xl/worksheets/sheet1.xml", stopwatchWorkbookSheetXml(selected));
+            workbook.close();
+            Toast.makeText(this, "秒表圈速 Excel 表格已导出", Toast.LENGTH_LONG).show();
+        } catch (IOException ex) {
+            Toast.makeText(this, "Excel 导出失败，请重新选择保存位置", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void writeZipEntry(ZipOutputStream workbook, String path, String content) throws IOException {
+        workbook.putNextEntry(new ZipEntry(path));
+        workbook.write(content.getBytes(StandardCharsets.UTF_8));
+        workbook.closeEntry();
+    }
+
+    private String stopwatchWorkbookSheetXml(List<StopwatchItem> items) {
+        int maxLaps = 0;
+        for (StopwatchItem item : items) {
+            maxLaps = Math.max(maxLaps, item.laps.size());
+        }
+        int averageColumn = 3 + maxLaps;
+        int lastRow = items.size() + 2;
+
+        StringBuilder xml = new StringBuilder();
+        xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+                .append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+                .append("<dimension ref=\"A1:").append(excelColumnName(averageColumn))
+                .append(lastRow).append("\"/>")
+                .append("<sheetViews><sheetView workbookViewId=\"0\"/></sheetViews>")
+                .append("<sheetFormatPr defaultRowHeight=\"15\"/><cols>")
+                .append("<col min=\"1\" max=\"1\" width=\"16\" customWidth=\"1\"/>")
+                .append("<col min=\"2\" max=\"2\" width=\"40\" customWidth=\"1\"/>");
+        for (int column = 3; column < averageColumn; column++) {
+            xml.append("<col min=\"").append(column).append("\" max=\"").append(column)
+                    .append("\" width=\"5\" customWidth=\"1\"/>");
+        }
+        xml.append("<col min=\"").append(averageColumn).append("\" max=\"")
+                .append(averageColumn).append("\" width=\"9\" customWidth=\"1\"/>")
+                .append("</cols><sheetData>")
+                .append("<row r=\"1\" ht=\"15\" customHeight=\"1\">");
+        appendInlineStringCell(xml, "A1", "秒表名称", 3);
+        appendInlineStringCell(xml, "B1", "作业内容", 3);
+        if (maxLaps > 0) {
+            appendInlineStringCell(xml, "C1", "测量圈数", 3);
+        }
+        appendInlineStringCell(xml, excelColumnName(averageColumn) + "1", "平均值", 3);
+        xml.append("</row><row r=\"2\" ht=\"15\" customHeight=\"1\">");
+        appendStyledEmptyCell(xml, "A2", 3);
+        appendStyledEmptyCell(xml, "B2", 3);
+        for (int lapIndex = 0; lapIndex < maxLaps; lapIndex++) {
+            String address = excelColumnName(lapIndex + 3) + "2";
+            xml.append("<c r=\"").append(address).append("\" s=\"3\" t=\"n\"><v>")
+                    .append(lapIndex + 1).append("</v></c>");
+        }
+        appendStyledEmptyCell(xml, excelColumnName(averageColumn) + "2", 3);
+        xml.append("</row>");
+
+        for (int itemIndex = 0; itemIndex < items.size(); itemIndex++) {
+            StopwatchItem item = items.get(itemIndex);
+            int rowNumber = itemIndex + 3;
+            xml.append("<row r=\"").append(rowNumber).append("\" ht=\"15\" customHeight=\"1\">");
+            appendInlineStringCell(xml, "A" + rowNumber, item.name, 4);
+            appendInlineStringCell(xml, "B" + rowNumber, item.note, 4);
+            double totalSeconds = 0;
+            for (int lapIndex = 0; lapIndex < maxLaps; lapIndex++) {
+                String address = excelColumnName(lapIndex + 3) + rowNumber;
+                if (lapIndex < item.laps.size()) {
+                    Lap lap = item.laps.get(lapIndex);
+                    double seconds = lap.splitMillis / 1000.0d;
+                    totalSeconds += seconds;
+                    xml.append("<c r=\"").append(address).append("\" s=\"1\" t=\"n\"><v>")
+                            .append(String.format(Locale.ROOT, "%.3f", seconds)).append("</v></c>");
+                } else {
+                    appendStyledEmptyCell(xml, address, 5);
+                }
+            }
+            if (item.laps.isEmpty()) {
+                appendStyledEmptyCell(xml, excelColumnName(averageColumn) + rowNumber, 2);
+            } else {
+                double averageSeconds = totalSeconds / item.laps.size();
+                xml.append("<c r=\"").append(excelColumnName(averageColumn)).append(rowNumber)
+                        .append("\" s=\"2\" t=\"n\"><v>")
+                        .append(String.format(Locale.ROOT, "%.3f", averageSeconds)).append("</v></c>");
+            }
+            xml.append("</row>");
+        }
+        xml.append("</sheetData><mergeCells count=\"").append(maxLaps > 1 ? 4 : 3).append("\">")
+                .append("<mergeCell ref=\"A1:A2\"/><mergeCell ref=\"B1:B2\"/>");
+        if (maxLaps > 1) {
+            xml.append("<mergeCell ref=\"C1:").append(excelColumnName(2 + maxLaps)).append("1\"/>");
+        }
+        String averageColumnName = excelColumnName(averageColumn);
+        xml.append("<mergeCell ref=\"").append(averageColumnName).append("1:")
+                .append(averageColumnName).append("2\"/></mergeCells>")
+                .append("<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/></worksheet>");
+        return xml.toString();
+    }
+
+    private void appendInlineStringCell(StringBuilder xml, String address, String value, int style) {
+        xml.append("<c r=\"").append(address).append("\" s=\"").append(style)
+                .append("\" t=\"inlineStr\"><is><t xml:space=\"preserve\">")
+                .append(xmlEscape(value)).append("</t></is></c>");
+    }
+
+    private void appendStyledEmptyCell(StringBuilder xml, String address, int style) {
+        xml.append("<c r=\"").append(address).append("\" s=\"").append(style).append("\"/>");
+    }
+
+    private String stopwatchWorkbookStylesXml() {
+        return "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+                + "<styleSheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+                + "<numFmts count=\"2\"><numFmt numFmtId=\"164\" formatCode=\"0.000\"/>"
+                + "<numFmt numFmtId=\"165\" formatCode=\"0.00&quot;s&quot;\"/></numFmts>"
+                + "<fonts count=\"2\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font>"
+                + "<font><b/><sz val=\"12\"/><name val=\"Calibri\"/></font></fonts>"
+                + "<fills count=\"2\"><fill><patternFill patternType=\"none\"/></fill>"
+                + "<fill><patternFill patternType=\"solid\"><fgColor rgb=\"FFB7E6A5\"/><bgColor indexed=\"64\"/></patternFill></fill></fills>"
+                + "<borders count=\"2\"><border><left/><right/><top/><bottom/><diagonal/></border>"
+                + "<border><left style=\"thin\"><color rgb=\"FF000000\"/></left>"
+                + "<right style=\"thin\"><color rgb=\"FF000000\"/></right>"
+                + "<top style=\"thin\"><color rgb=\"FF000000\"/></top>"
+                + "<bottom style=\"thin\"><color rgb=\"FF000000\"/></bottom><diagonal/></border></borders>"
+                + "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
+                + "<cellXfs count=\"6\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/>"
+                + "<xf numFmtId=\"164\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\"><alignment horizontal=\"center\" vertical=\"center\" shrinkToFit=\"1\"/></xf>"
+                + "<xf numFmtId=\"165\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyNumberFormat=\"1\"><alignment horizontal=\"center\" vertical=\"center\" shrinkToFit=\"1\"/></xf>"
+                + "<xf numFmtId=\"0\" fontId=\"1\" fillId=\"1\" borderId=\"1\" xfId=\"0\" applyFont=\"1\" applyFill=\"1\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" wrapText=\"1\"/></xf>"
+                + "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"left\" vertical=\"center\" wrapText=\"1\"/></xf>"
+                + "<xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"1\" xfId=\"0\" applyAlignment=\"1\"><alignment horizontal=\"center\" vertical=\"center\" shrinkToFit=\"1\"/></xf></cellXfs>"
+                + "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+                + "</styleSheet>";
+    }
+
+    private String excelColumnName(int columnNumber) {
+        StringBuilder name = new StringBuilder();
+        int value = columnNumber;
+        while (value > 0) {
+            int remainder = (value - 1) % 26;
+            name.insert(0, (char) ('A' + remainder));
+            value = (value - 1) / 26;
+        }
+        return name.toString();
+    }
+
+    private String xmlEscape(String value) {
+        StringBuilder escaped = new StringBuilder();
+        String safe = value == null ? "" : value;
+        for (int offset = 0; offset < safe.length();) {
+            int codePoint = safe.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            if (!(codePoint == 0x9 || codePoint == 0xA || codePoint == 0xD
+                    || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+                    || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+                    || (codePoint >= 0x10000 && codePoint <= 0x10FFFF))) {
+                continue;
+            }
+            switch (codePoint) {
+                case '&': escaped.append("&amp;"); break;
+                case '<': escaped.append("&lt;"); break;
+                case '>': escaped.append("&gt;"); break;
+                case '"': escaped.append("&quot;"); break;
+                case '\'': escaped.append("&apos;"); break;
+                default: escaped.appendCodePoint(codePoint);
+            }
+        }
+        return escaped.toString();
     }
 
     private String buildRecentLogsCsv(long endTime) {
@@ -1251,6 +1667,7 @@ public class MainActivity extends Activity {
     private static class StopwatchItem {
         final String id;
         String name;
+        String note = "";
         int color;
         long accumulatedMillis = 0;
         boolean running = false;
@@ -1330,10 +1747,24 @@ public class MainActivity extends Activity {
                 LinearLayout row = new LinearLayout(MainActivity.this);
                 row.setOrientation(LinearLayout.VERTICAL);
 
+                LinearLayout nameRow = new LinearLayout(MainActivity.this);
+                nameRow.setGravity(Gravity.CENTER_VERTICAL);
+                row.addView(nameRow, new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                ));
+
                 TextView name = new TextView(MainActivity.this);
                 name.setTypeface(Typeface.DEFAULT_BOLD);
                 name.setSingleLine(false);
-                row.addView(name);
+                nameRow.addView(name, new LinearLayout.LayoutParams(
+                        0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        1
+                ));
+
+                Button note = createButton("笔记");
+                nameRow.addView(note, new LinearLayout.LayoutParams(dp(68), dp(38)));
 
                 TextView time = new TextView(MainActivity.this);
                 time.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
@@ -1374,7 +1805,7 @@ public class MainActivity extends Activity {
                 laps.setSingleLine(false);
                 row.addView(laps);
 
-                holder = new RowHolder(row, name, time, status, toggle, lap, reset, color, rename, delete, laps);
+                holder = new RowHolder(row, name, note, time, status, toggle, lap, reset, color, rename, delete, laps);
                 row.setTag(holder);
                 convertView = row;
             } else {
@@ -1388,6 +1819,8 @@ public class MainActivity extends Activity {
             holder.name.setText(item.name);
             holder.name.setTextColor(item.color);
             holder.name.setTextSize(scaled(17));
+            holder.note.setText("笔记" + (item.note.isEmpty() ? "" : " ·"));
+            holder.note.setTextSize(scaled(13));
 
             holder.time.setText(formatDuration(elapsed));
             holder.time.setTextColor(item.color);
@@ -1398,7 +1831,10 @@ public class MainActivity extends Activity {
             holder.status.setTextSize(scaled(13));
 
             holder.toggle.setText(item.running ? "暂停" : (elapsed > 0 ? "继续" : "开始"));
-            holder.lap.setEnabled(elapsed > 0);
+            boolean lapLimitReached = item.laps.size() >= MAX_LAPS;
+            boolean canAddLap = elapsed > 0 && !lapLimitReached;
+            holder.lap.setEnabled(canAddLap);
+            holder.lap.setAlpha(lapLimitReached ? 0.7f : 1f);
             holder.laps.setText(lapPreview(item));
             holder.laps.setTextSize(scaled(12));
             holder.laps.setTextColor(secondaryTextColor);
@@ -1413,8 +1849,12 @@ public class MainActivity extends Activity {
             holder.row.setBackground(bg);
 
             styleButton(holder.toggle, item.running ? Color.rgb(216, 70, 70) : item.color, Color.WHITE);
-            styleButton(holder.lap, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+            int normalControlColor = darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244);
+            styleButton(holder.lap,
+                    lapLimitReached ? Color.rgb(105, 110, 120) : normalControlColor,
+                    lapLimitReached ? Color.rgb(225, 227, 231) : textColor);
             styleButton(holder.reset, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+            styleButton(holder.note, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
             styleButton(holder.color, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
             styleButton(holder.rename, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
             styleButton(holder.delete, Color.rgb(153, 58, 65), Color.WHITE);
@@ -1425,6 +1865,7 @@ public class MainActivity extends Activity {
             holder.color.setOnClickListener(v -> chooseStopwatchColor(item));
             holder.rename.setOnClickListener(v -> renameStopwatch(item));
             holder.delete.setOnClickListener(v -> deleteStopwatch(item));
+            holder.note.setOnClickListener(v -> showNoteDialog(item));
             holder.laps.setOnClickListener(v -> showLapDialog(item));
 
             return convertView;
@@ -1458,6 +1899,7 @@ public class MainActivity extends Activity {
     private static class RowHolder {
         final LinearLayout row;
         final TextView name;
+        final Button note;
         final TextView time;
         final TextView status;
         final Button toggle;
@@ -1472,6 +1914,7 @@ public class MainActivity extends Activity {
         RowHolder(
                 LinearLayout row,
                 TextView name,
+                Button note,
                 TextView time,
                 TextView status,
                 Button toggle,
@@ -1484,6 +1927,7 @@ public class MainActivity extends Activity {
         ) {
             this.row = row;
             this.name = name;
+            this.note = note;
             this.time = time;
             this.status = status;
             this.toggle = toggle;
