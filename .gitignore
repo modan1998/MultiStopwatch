@@ -15,6 +15,15 @@ captures/
 *.apk
 *.aab
 
+# Web tooling and local configuration
+node_modules/
+/dist/
+.env
+.env.*
+!.env.example
+.wrangler/
+coverage/
+
 # Operating system files
 .DS_Store
 Thumbs.db
