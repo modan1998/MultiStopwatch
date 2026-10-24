@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2F7DFF">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="多秒表">
+  <meta name="description" content="可离线使用的多秒表计时器">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <title>多秒表计时器</title>
+</head>
+<body>
+  <div id="wallpaper-layer" aria-hidden="true"></div>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>多秒表计时器</h1>
+        <p id="summary" class="summary" aria-live="polite"></p>
+      </div>
+      <button id="add-stopwatch" class="button primary" type="button">新建秒表</button>
+    </header>
+
+    <nav class="toolbar" aria-label="应用操作">
+      <button id="interface-button" class="button secondary" type="button">界面</button>
+      <button id="appearance-button" class="button secondary" type="button">外观样式</button>
+      <button id="data-button" class="button secondary" type="button">数据</button>
+      <button id="trash-button" class="button secondary" type="button">回收站</button>
+    </nav>
+
+    <main>
+      <section id="stopwatch-list" class="stopwatch-list" aria-label="秒表列表"></section>
+      <p id="empty-state" class="empty-state" hidden>还没有秒表</p>
+    </main>
+  </div>
+
+  <aside id="ios-install-guide" class="install-guide" hidden aria-label="添加到主屏幕">
+    <div>
+      <strong>添加到主屏幕</strong>
+      <p>点击底部分享按钮 → 添加到主屏幕</p>
+    </div>
+    <button id="dismiss-install-guide" class="button guide-close" type="button" aria-label="关闭安装提示">关闭</button>
+  </aside>
+
+  <aside id="update-notice" class="update-notice" hidden aria-live="polite">
+    <span>有新版本可用</span>
+    <button id="apply-update" class="button update-action" type="button">点击刷新</button>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="interface-dialog" class="dialog">
+    <form method="dialog" class="dialog-panel">
+      <div class="dialog-heading"><h2>界面</h2><button class="button close-dialog" value="cancel">关闭</button></div>
+      <div class="dialog-actions">
+        <button id="wallpaper-button" class="button secondary" type="button">壁纸</button>
+        <button id="remove-wallpaper" class="button secondary" type="button" hidden>移除壁纸</button>
+        <button id="card-style-button" class="button secondary" type="button">CC · 秒表样式</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="appearance-dialog" class="dialog">
+    <form id="appearance-form" class="dialog-panel">
+      <div class="dialog-heading"><h2>外观样式</h2><button class="button close-dialog" type="button" data-close="appearance-dialog">关闭</button></div>
+      <label class="field-label" for="theme-color">主题色</label>
+      <div class="color-control"><input id="theme-color" type="color" value="#2F7DFF"><output id="theme-color-value">#2F7DFF</output></div>
+      <label class="switch-row"><span>深色模式</span><input id="dark-mode" type="checkbox"></label>
+      <label class="switch-row"><span>紧凑列表</span><input id="compact-list" type="checkbox"></label>
+      <label class="field-label" for="font-scale">字体大小 <output id="font-scale-value">100%</output></label>
+      <input id="font-scale" type="range" min="80" max="140" step="5" value="100">
+      <div class="dialog-actions"><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="card-style-dialog" class="dialog">
+    <form id="card-style-form" class="dialog-panel">
+      <div class="dialog-heading"><h2>CC · 秒表样式</h2><button class="button close-dialog" type="button" data-close="card-style-dialog">关闭</button></div>
+      <label class="field-label" for="style-timer">选择秒表</label>
+      <select id="style-timer" class="text-input"></select>
+      <label class="field-label" for="card-background">背景颜色</label>
+      <div class="color-control"><input id="card-background" type="color"><output id="card-background-value"></output></div>
+      <label class="field-label" for="card-border">边框颜色</label>
+      <div class="color-control"><input id="card-border" type="color"><output id="card-border-value"></output></div>
+      <label class="field-label" for="card-transparency">背景透明度 <output id="transparency-value">0%</output></label>
+      <input id="card-transparency" type="range" min="0" max="100" step="1" value="0">
+      <div id="card-preview" class="style-preview">秒表样式预览</div>
+      <div class="dialog-actions"><button class="button primary" type="submit">应用</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="name-dialog" class="dialog">
+    <form id="name-form" class="dialog-panel">
+      <div class="dialog-heading"><h2 id="name-dialog-title">新建秒表</h2><button class="button close-dialog" type="button" data-close="name-dialog">取消</button></div>
+      <label class="field-label" for="timer-name">名称</label>
+      <input id="timer-name" class="text-input" type="text" maxlength="40" required autocomplete="off">
+      <div class="dialog-actions"><button class="button primary" type="submit">确定</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="note-dialog" class="dialog">
+    <form id="note-form" class="dialog-panel">
+      <div class="dialog-heading"><h2 id="note-dialog-title">秒表笔记</h2><button class="button close-dialog" type="button" data-close="note-dialog">取消</button></div>
+      <label class="field-label" for="timer-note">笔记</label>
+      <textarea id="timer-note" class="text-input note-input" maxlength="1000"></textarea>
+      <div class="dialog-actions"><button class="button primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="data-dialog" class="dialog">
+    <form method="dialog" class="dialog-panel">
+      <div class="dialog-heading"><h2>数据</h2><button class="button close-dialog" value="cancel">关闭</button></div>
+      <div class="data-actions">
+        <button id="export-backup" class="button secondary" type="button">导出 JSON 备份</button>
+        <button id="import-backup" class="button secondary" type="button">导入 JSON 备份</button>
+        <button id="export-timers" class="button secondary" type="button">导出秒表 CSV</button>
+        <button id="export-logs" class="button secondary" type="button">导出最近 30 天日志</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="trash-dialog" class="dialog">
+    <div class="dialog-panel">
+      <div class="dialog-heading"><h2>回收站</h2><button class="button close-dialog" type="button" data-close="trash-dialog">关闭</button></div>
+      <div id="trash-list" class="trash-list"></div>
+      <div class="dialog-actions"><button id="clear-trash" class="button danger" type="button">清空回收站</button></div>
+    </div>
+  </dialog>
+
+  <input id="wallpaper-file" class="visually-hidden" type="file" accept="image/*">
+  <input id="backup-file" class="visually-hidden" type="file" accept="application/json,.json">
+  <script src="app.js" defer></script>
+</body>
+</html>
