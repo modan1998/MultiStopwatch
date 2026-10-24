@@ -7,6 +7,8 @@ import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
@@ -16,12 +18,18 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -33,6 +41,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.PopupMenu;
 import android.widget.SeekBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -43,6 +52,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
@@ -63,11 +73,19 @@ public class MainActivity extends Activity {
     private static final String PREF_DARK_MODE = "dark_mode";
     private static final String PREF_COMPACT_LIST = "compact_list";
     private static final String PREF_FONT_SCALE = "font_scale";
+    private static final String PREF_WALLPAPER_URI = "wallpaper_uri";
     private static final int MAX_STOPWATCHES = 7;
     private static final int MAX_LAPS = 50;
     private static final int MAX_NOTE_LENGTH = 1000;
+    private static final int MENU_ADD_STOPWATCH = 1;
+    private static final int MENU_EXPORT_LOGS = 2;
+    private static final int MENU_THEME = 3;
+    private static final int MENU_EXPORT_STOPWATCHES = 4;
+    private static final int MENU_TRASH = 5;
+    private static final int MENU_STYLE_SETTINGS = 6;
     private static final int REQUEST_EXPORT_LOGS = 1001;
     private static final int REQUEST_EXPORT_STOPWATCHES = 1002;
+    private static final int REQUEST_PICK_WALLPAPER = 1003;
     private static final long LOG_RETENTION_MILLIS = 30L * 24 * 60 * 60 * 1000;
     private static final long TRASH_RETENTION_MILLIS = 7L * 24 * 60 * 60 * 1000;
     private static final long TIMER_REFRESH_INTERVAL_MILLIS = 16;
@@ -92,23 +110,21 @@ public class MainActivity extends Activity {
 
     private SharedPreferences preferences;
     private StopwatchAdapter adapter;
-    private LinearLayout windowContainer;
+    private FrameLayout windowContainer;
+    private android.widget.ImageView wallpaperView;
     private LinearLayout root;
     private TextView titleView;
     private TextView summaryView;
     private TextView emptyView;
     private ListView listView;
-    private Button addButton;
-    private Button themeButton;
-    private Button exportButton;
-    private Button stopwatchExportButton;
-    private Button trashButton;
+    private Button menuButton;
     private List<StopwatchItem> pendingStopwatchExport;
 
     private int themeColor = Color.rgb(47, 125, 255);
     private boolean darkMode = false;
     private boolean compactList = false;
     private float fontScale = 1.0f;
+    private String wallpaperUriString;
     private int backgroundColor;
     private int surfaceColor;
     private int textColor;
@@ -179,25 +195,34 @@ public class MainActivity extends Activity {
     }
 
     private void buildUi() {
-        windowContainer = new LinearLayout(this);
-        windowContainer.setOrientation(LinearLayout.VERTICAL);
+        windowContainer = new FrameLayout(this);
         windowContainer.setBackgroundColor(Color.BLACK);
+
+        wallpaperView = new android.widget.ImageView(this);
+        wallpaperView.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+        windowContainer.addView(wallpaperView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(14), dp(12), dp(14), dp(10));
-        windowContainer.addView(root, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1
+        windowContainer.addView(root, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
         ));
         setContentView(windowContainer);
         applySystemBarInsets(windowContainer);
 
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.VERTICAL);
-        root.addView(header, new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
+        );
+        headerParams.bottomMargin = dp(12);
+        root.addView(header, headerParams);
 
         LinearLayout titleRow = new LinearLayout(this);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -220,37 +245,10 @@ public class MainActivity extends Activity {
         summaryView.setTextSize(scaled(13));
         titleBlock.addView(summaryView);
 
-        themeButton = createButton("界面");
-        LinearLayout.LayoutParams themeParams = new LinearLayout.LayoutParams(dp(68), dp(42));
-        themeParams.setMargins(dp(4), 0, dp(4), 0);
-        titleRow.addView(themeButton, themeParams);
-
-        stopwatchExportButton = createButton("导出");
-        titleRow.addView(stopwatchExportButton, new LinearLayout.LayoutParams(dp(68), dp(42)));
-
-        LinearLayout actionRow = new LinearLayout(this);
-        actionRow.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams actionRowParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(48)
-        );
-        actionRowParams.setMargins(0, dp(12), 0, dp(8));
-        header.addView(actionRow, actionRowParams);
-
-        addButton = createButton("新建秒表");
-        LinearLayout.LayoutParams addParams = new LinearLayout.LayoutParams(0, dp(48), 1);
-        addParams.setMargins(0, 0, dp(4), 0);
-        actionRow.addView(addButton, addParams);
-
-        exportButton = createButton("导出日志");
-        LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(0, dp(48), 1);
-        exportParams.setMargins(dp(4), 0, dp(4), 0);
-        actionRow.addView(exportButton, exportParams);
-
-        trashButton = createButton("回收站");
-        LinearLayout.LayoutParams trashParams = new LinearLayout.LayoutParams(0, dp(48), 1);
-        trashParams.setMargins(dp(4), 0, 0, 0);
-        actionRow.addView(trashButton, trashParams);
+        menuButton = createButton("菜单");
+        LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(dp(78), dp(42));
+        menuParams.setMargins(dp(8), 0, 0, 0);
+        titleRow.addView(menuButton, menuParams);
 
         FrameLayout frame = new FrameLayout(this);
         root.addView(frame, new LinearLayout.LayoutParams(
@@ -271,7 +269,7 @@ public class MainActivity extends Activity {
 
         emptyView = new TextView(this);
         emptyView.setGravity(Gravity.CENTER);
-        emptyView.setText("还没有秒表\n点“新建秒表”开始计时");
+        emptyView.setText("还没有秒表\n点“菜单”中的“新建秒表”开始计时");
         emptyView.setTextSize(scaled(16));
         emptyView.setLineSpacing(dp(4), 1.0f);
         frame.addView(emptyView, new FrameLayout.LayoutParams(
@@ -283,14 +281,50 @@ public class MainActivity extends Activity {
         adapter = new StopwatchAdapter();
         listView.setAdapter(adapter);
 
-        addButton.setOnClickListener(v -> addStopwatch());
-        exportButton.setOnClickListener(v -> exportRecentLogs());
-        stopwatchExportButton.setOnClickListener(v -> showStopwatchExportDialog());
-        trashButton.setOnClickListener(v -> showTrashDialog());
-        themeButton.setOnClickListener(v -> showThemeDialog());
+        menuButton.setOnClickListener(v -> showMainMenu(v));
 
         applyTheme();
         updateSummary();
+    }
+
+    private void showMainMenu(View anchor) {
+        PopupMenu popup = new PopupMenu(this, anchor);
+        Menu menu = popup.getMenu();
+        boolean canAddStopwatch = stopwatches.size() < MAX_STOPWATCHES;
+        MenuItem addItem = menu.add(Menu.NONE, MENU_ADD_STOPWATCH, Menu.NONE,
+                canAddStopwatch ? "新建秒表" : "已达上限");
+        addItem.setEnabled(canAddStopwatch);
+        menu.add(Menu.NONE, MENU_EXPORT_LOGS, Menu.NONE, "导出日志");
+        menu.add(Menu.NONE, MENU_THEME, Menu.NONE, "界面");
+        menu.add(Menu.NONE, MENU_STYLE_SETTINGS, Menu.NONE, "外观样式");
+        menu.add(Menu.NONE, MENU_EXPORT_STOPWATCHES, Menu.NONE, "导出");
+        menu.add(Menu.NONE, MENU_TRASH, Menu.NONE, "回收站 (" + trash.size() + ")");
+
+        popup.setOnMenuItemClickListener(item -> {
+            switch (item.getItemId()) {
+                case MENU_ADD_STOPWATCH:
+                    addStopwatch();
+                    return true;
+                case MENU_EXPORT_LOGS:
+                    exportRecentLogs();
+                    return true;
+                case MENU_THEME:
+                    showInterfaceDialog();
+                    return true;
+                case MENU_STYLE_SETTINGS:
+                    showThemeDialog();
+                    return true;
+                case MENU_EXPORT_STOPWATCHES:
+                    showStopwatchExportDialog();
+                    return true;
+                case MENU_TRASH:
+                    showTrashDialog();
+                    return true;
+                default:
+                    return false;
+            }
+        });
+        popup.show();
     }
 
     private void applySystemBarInsets(View container) {
@@ -337,7 +371,7 @@ public class MainActivity extends Activity {
                 bottom = insets.getSystemWindowInsetBottom();
             }
 
-            LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) root.getLayoutParams();
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) root.getLayoutParams();
             params.leftMargin = left;
             params.topMargin = top;
             params.rightMargin = right;
@@ -481,6 +515,26 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void vibrateButtonClick(View source) {
+        Vibrator vibrator;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            VibratorManager manager = getSystemService(VibratorManager.class);
+            vibrator = manager == null ? null : manager.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        }
+
+        if (vibrator == null || !vibrator.hasVibrator()) {
+            source.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(45, VibrationEffect.DEFAULT_AMPLITUDE));
+        } else {
+            vibrator.vibrate(45L);
+        }
+    }
+
     private boolean hasRunningStopwatches() {
         for (StopwatchItem item : stopwatches) {
             if (item.running) {
@@ -620,6 +674,306 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    private void showInterfaceDialog() {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(18), dp(12), dp(18), dp(4));
+
+        Button wallpaperButton = createButton("壁纸");
+        Button ccButton = createButton("CC");
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        buttonParams.setMargins(0, 0, dp(6), 0);
+        panel.addView(wallpaperButton, buttonParams);
+        LinearLayout.LayoutParams ccParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        ccParams.setMargins(dp(6), 0, 0, 0);
+        panel.addView(ccButton, ccParams);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("界面")
+                .setView(panel)
+                .setNegativeButton("关闭", null)
+                .create();
+        wallpaperButton.setOnClickListener(v -> {
+            dialog.dismiss();
+            showWallpaperDialog();
+        });
+        ccButton.setOnClickListener(v -> {
+            dialog.dismiss();
+            showStopwatchCardPicker();
+        });
+        dialog.show();
+        styleButton(wallpaperButton, themeColor, readableTextColor(themeColor));
+        styleButton(ccButton, themeColor, readableTextColor(themeColor));
+    }
+
+    private void showWallpaperDialog() {
+        boolean hasWallpaper = wallpaperUriString != null && !wallpaperUriString.isEmpty();
+        String[] actions = hasWallpaper
+                ? new String[]{"导入新壁纸", "移除壁纸"}
+                : new String[]{"导入壁纸"};
+        new AlertDialog.Builder(this)
+                .setTitle("软件壁纸")
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        launchWallpaperPicker();
+                    } else {
+                        removeImportedWallpaper();
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void launchWallpaperPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQUEST_PICK_WALLPAPER);
+        } catch (ActivityNotFoundException ex) {
+            Toast.makeText(this, "未找到可用的图片选择器", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void removeImportedWallpaper() {
+        if (wallpaperUriString != null) {
+            Uri oldUri = Uri.parse(wallpaperUriString);
+            try {
+                getContentResolver().releasePersistableUriPermission(oldUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+            }
+        }
+        wallpaperUriString = null;
+        preferences.edit().remove(PREF_WALLPAPER_URI).apply();
+        renderWallpaper();
+        addLog("界面", "移除壁纸", "");
+        Toast.makeText(this, "已移除壁纸", Toast.LENGTH_SHORT).show();
+    }
+
+    private void renderWallpaper() {
+        if (wallpaperView == null || windowContainer == null) {
+            return;
+        }
+        if (wallpaperUriString == null || wallpaperUriString.isEmpty()) {
+            wallpaperView.setImageDrawable(null);
+            wallpaperView.setVisibility(View.GONE);
+            root.setBackgroundColor(backgroundColor);
+            windowContainer.setBackgroundColor(backgroundColor);
+            return;
+        }
+
+        try {
+            Bitmap bitmap = decodeWallpaper(Uri.parse(wallpaperUriString));
+            wallpaperView.setImageBitmap(bitmap);
+            wallpaperView.setVisibility(View.VISIBLE);
+            root.setBackgroundColor(Color.TRANSPARENT);
+            windowContainer.setBackgroundColor(Color.BLACK);
+        } catch (IOException | SecurityException ex) {
+            wallpaperView.setImageDrawable(null);
+            wallpaperView.setVisibility(View.GONE);
+            root.setBackgroundColor(backgroundColor);
+            windowContainer.setBackgroundColor(backgroundColor);
+            Toast.makeText(this, "读取壁纸失败，请重新选择图片", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private Bitmap decodeWallpaper(Uri uri) throws IOException {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) {
+                throw new IOException("Unable to open wallpaper");
+            }
+            BitmapFactory.decodeStream(input, null, bounds);
+        }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            throw new IOException("Invalid wallpaper image");
+        }
+
+        int targetWidth = Math.max(1, getResources().getDisplayMetrics().widthPixels * 2);
+        int targetHeight = Math.max(1, getResources().getDisplayMetrics().heightPixels * 2);
+        int sampleSize = 1;
+        while (bounds.outWidth / (sampleSize * 2) >= targetWidth
+                && bounds.outHeight / (sampleSize * 2) >= targetHeight) {
+            sampleSize *= 2;
+        }
+
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sampleSize;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        try (InputStream input = getContentResolver().openInputStream(uri)) {
+            if (input == null) {
+                throw new IOException("Unable to open wallpaper");
+            }
+            Bitmap bitmap = BitmapFactory.decodeStream(input, null, options);
+            if (bitmap == null) {
+                throw new IOException("Unable to decode wallpaper");
+            }
+            return bitmap;
+        }
+    }
+
+    private void showStopwatchCardPicker() {
+        if (stopwatches.isEmpty()) {
+            Toast.makeText(this, "请先创建秒表", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] names = new String[stopwatches.size()];
+        for (int i = 0; i < stopwatches.size(); i++) {
+            names[i] = stopwatches.get(i).name;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("CC · 选择秒表")
+                .setItems(names, (dialog, which) -> showStopwatchCardAppearance(stopwatches.get(which)))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void showStopwatchCardAppearance(StopwatchItem item) {
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(18), dp(4), dp(18), dp(4));
+
+        TextView backgroundLabel = dialogLabel("背景颜色");
+        panel.addView(backgroundLabel);
+        EditText backgroundInput = createColorInput(
+                item.cardBackgroundColor == 0 ? surfaceColor : item.cardBackgroundColor
+        );
+        panel.addView(backgroundInput);
+        LinearLayout backgroundPresets = new LinearLayout(this);
+        backgroundPresets.setGravity(Gravity.CENTER);
+        panel.addView(backgroundPresets, rowParams());
+        addPresetButton(backgroundPresets, "白", "#FFFFFF", backgroundInput);
+        addPresetButton(backgroundPresets, "浅灰", "#F6F8FC", backgroundInput);
+        addPresetButton(backgroundPresets, "深灰", "#1C222C", backgroundInput);
+        addPresetButton(backgroundPresets, "黑", "#10141B", backgroundInput);
+
+        TextView borderLabel = dialogLabel("边框颜色");
+        panel.addView(borderLabel);
+        EditText borderInput = createColorInput(item.borderColor);
+        panel.addView(borderInput);
+        LinearLayout borderPresets = new LinearLayout(this);
+        borderPresets.setGravity(Gravity.CENTER);
+        panel.addView(borderPresets, rowParams());
+        addPresetButton(borderPresets, "蓝", "#2F7DFF", borderInput);
+        addPresetButton(borderPresets, "绿", "#1F9D63", borderInput);
+        addPresetButton(borderPresets, "橙", "#E97824", borderInput);
+        addPresetButton(borderPresets, "紫", "#7B61FF", borderInput);
+
+        TextView opacityLabel = dialogLabel("背景透明度：" + item.backgroundTransparencyPercent + "%");
+        panel.addView(opacityLabel);
+        SeekBar opacitySeek = new SeekBar(this);
+        opacitySeek.setMax(100);
+        opacitySeek.setProgress(item.backgroundTransparencyPercent);
+        opacitySeek.setContentDescription("背景透明度");
+        panel.addView(opacitySeek);
+
+        TextView preview = new TextView(this);
+        preview.setText(item.name + " · 预览");
+        preview.setTextColor(textColor);
+        preview.setGravity(Gravity.CENTER);
+        preview.setPadding(dp(8), dp(8), dp(8), dp(8));
+        panel.addView(preview, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)
+        ));
+        Runnable updatePreview = () -> {
+            try {
+                preview.setBackground(createStopwatchCardBackground(
+                        parseColor(backgroundInput.getText().toString()),
+                        opacitySeek.getProgress(),
+                        parseColor(borderInput.getText().toString())
+                ));
+            } catch (IllegalArgumentException ignored) {
+            }
+        };
+        backgroundInput.addTextChangedListener(simpleTextWatcher(updatePreview));
+        borderInput.addTextChangedListener(simpleTextWatcher(updatePreview));
+        opacitySeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                opacityLabel.setText("背景透明度：" + progress + "%");
+                updatePreview.run();
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        updatePreview.run();
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(panel);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("CC · " + item.name)
+                .setView(scroll)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("应用", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            try {
+                int nextBackground = parseColor(backgroundInput.getText().toString());
+                int nextBorder = parseColor(borderInput.getText().toString());
+                int nextOpacity = opacitySeek.getProgress();
+                item.cardBackgroundColor = nextBackground;
+                item.borderColor = nextBorder;
+                item.backgroundTransparencyPercent = nextOpacity;
+                addLog(item.name, "更改卡片外观", "背景 " + hex(nextBackground)
+                        + "，透明度 " + nextOpacity + "%，边框 " + hex(nextBorder));
+                saveStopwatches();
+                adapter.notifyDataSetChanged();
+                dialog.dismiss();
+            } catch (IllegalArgumentException ex) {
+                Toast.makeText(this, "颜色格式不正确，例如 #2F7DFF", Toast.LENGTH_LONG).show();
+            }
+        }));
+        dialog.show();
+    }
+
+    private EditText createColorInput(int color) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        input.setText(hex(color));
+        input.setSelectAllOnFocus(true);
+        return input;
+    }
+
+    private TextWatcher simpleTextWatcher(Runnable callback) {
+        return new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+                callback.run();
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+            }
+        };
+    }
+
+    private GradientDrawable createStopwatchCardBackground(int color, int transparencyPercent, int borderColor) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(withTransparency(color, transparencyPercent));
+        drawable.setCornerRadius(dp(8));
+        drawable.setStroke(dp(2), borderColor);
+        return drawable;
+    }
+
+    private int withTransparency(int color, int transparencyPercent) {
+        int transparency = Math.max(0, Math.min(100, transparencyPercent));
+        int alpha = Color.alpha(color) * (100 - transparency) / 100;
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
+    }
+
     private void showThemeDialog() {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
@@ -744,16 +1098,13 @@ public class MainActivity extends Activity {
         textColor = darkMode ? Color.rgb(238, 242, 248) : Color.rgb(20, 28, 39);
         secondaryTextColor = darkMode ? Color.rgb(168, 178, 192) : Color.rgb(95, 109, 128);
 
-        root.setBackgroundColor(backgroundColor);
+        root.setBackgroundColor(wallpaperUriString == null ? backgroundColor : Color.TRANSPARENT);
         titleView.setTextColor(textColor);
         summaryView.setTextColor(secondaryTextColor);
         emptyView.setTextColor(secondaryTextColor);
         listView.setDivider(new ColorDrawable(Color.TRANSPARENT));
-        styleButton(addButton, themeColor, readableTextColor(themeColor));
-        styleButton(exportButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-        styleButton(trashButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-        styleButton(themeButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-        styleButton(stopwatchExportButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+        styleButton(menuButton, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+        renderWallpaper();
     }
 
     private void styleButton(Button button, int background, int foreground) {
@@ -782,14 +1133,6 @@ public class MainActivity extends Activity {
             }
             summaryView.setText(summary);
         }
-        if (addButton != null) {
-            boolean canAdd = stopwatches.size() < MAX_STOPWATCHES;
-            addButton.setEnabled(canAdd);
-            addButton.setText(canAdd ? "新建秒表" : "已达上限");
-        }
-        if (trashButton != null) {
-            trashButton.setText("回收站 (" + trash.size() + ")");
-        }
     }
 
     private void loadPreferences() {
@@ -797,6 +1140,7 @@ public class MainActivity extends Activity {
         darkMode = preferences.getBoolean(PREF_DARK_MODE, false);
         compactList = preferences.getBoolean(PREF_COMPACT_LIST, false);
         fontScale = preferences.getFloat(PREF_FONT_SCALE, 1.0f);
+        wallpaperUriString = preferences.getString(PREF_WALLPAPER_URI, null);
     }
 
     private void loadStopwatches() {
@@ -844,6 +1188,9 @@ public class MainActivity extends Activity {
         object.put("name", item.name);
         object.put("note", item.note);
         object.put("color", item.color);
+        object.put("borderColor", item.borderColor);
+        object.put("cardBackgroundColor", item.cardBackgroundColor);
+        object.put("backgroundTransparencyPercent", item.backgroundTransparencyPercent);
         object.put("accumulatedMillis", item.accumulatedMillis);
         object.put("running", item.running);
         object.put("startedAtMillis", item.startedAtMillis);
@@ -866,6 +1213,10 @@ public class MainActivity extends Activity {
                 object.optInt("color", STOPWATCH_COLORS[0])
         );
         item.note = limitNoteLength(object.optString("note", ""));
+        item.borderColor = object.optInt("borderColor", item.color);
+        item.cardBackgroundColor = object.optInt("cardBackgroundColor", 0);
+        item.backgroundTransparencyPercent = Math.max(0, Math.min(100,
+                object.optInt("backgroundTransparencyPercent", 0)));
         item.accumulatedMillis = Math.max(0, object.optLong("accumulatedMillis", 0));
         item.running = object.optBoolean("running", false);
         item.startedAtMillis = object.optLong("startedAtMillis", 0);
@@ -999,11 +1350,11 @@ public class MainActivity extends Activity {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.VERTICAL);
             card.setPadding(dp(10), dp(8), dp(10), dp(8));
-            GradientDrawable cardBackground = new GradientDrawable();
-            cardBackground.setColor(surfaceColor);
-            cardBackground.setCornerRadius(dp(8));
-            cardBackground.setStroke(dp(2), entry.stopwatch.color);
-            card.setBackground(cardBackground);
+            card.setBackground(createStopwatchCardBackground(
+                    entry.stopwatch.cardBackgroundColor == 0 ? surfaceColor : entry.stopwatch.cardBackgroundColor,
+                    entry.stopwatch.backgroundTransparencyPercent,
+                    entry.stopwatch.borderColor
+            ));
             LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             );
@@ -1226,38 +1577,6 @@ public class MainActivity extends Activity {
         return true;
     }
 
-    private void chooseStopwatchColor(StopwatchItem item) {
-        List<Integer> availableColors = new ArrayList<>();
-        List<String> labels = new ArrayList<>();
-        int selected = 0;
-        for (int i = 0; i < STOPWATCH_COLORS.length; i++) {
-            int color = STOPWATCH_COLORS[i];
-            if (isStopwatchColorAvailable(color, item)) {
-                if (color == item.color) {
-                    selected = availableColors.size();
-                }
-                availableColors.add(color);
-                labels.add(STOPWATCH_COLOR_NAMES[i]);
-            }
-        }
-        final int[] selectedIndex = {selected};
-        new AlertDialog.Builder(this)
-                .setTitle("选择“" + item.name + "”的颜色")
-                .setSingleChoiceItems(labels.toArray(new String[0]), selected,
-                        (dialog, which) -> selectedIndex[0] = which)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("确定", (dialog, which) -> {
-                    int color = availableColors.get(selectedIndex[0]);
-                    if (item.color != color) {
-                        item.color = color;
-                        addLog(item.name, "更改颜色", hex(color));
-                        saveStopwatches();
-                        adapter.notifyDataSetChanged();
-                    }
-                })
-                .show();
-    }
-
     private void loadRuntimeLogs() {
         runtimeLogs.clear();
         String raw = preferences.getString(PREF_LOGS, null);
@@ -1375,6 +1694,9 @@ public class MainActivity extends Activity {
     private StopwatchItem snapshotForExport(StopwatchItem source) {
         StopwatchItem copy = new StopwatchItem(source.id, source.name, source.color);
         copy.note = source.note;
+        copy.borderColor = source.borderColor;
+        copy.cardBackgroundColor = source.cardBackgroundColor;
+        copy.backgroundTransparencyPercent = source.backgroundTransparencyPercent;
         copy.accumulatedMillis = source.elapsedMillis(now());
         for (Lap lap : source.laps) {
             copy.laps.add(new Lap(lap.number, lap.totalMillis, lap.splitMillis));
@@ -1401,6 +1723,26 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_PICK_WALLPAPER) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                return;
+            }
+            Uri wallpaperUri = data.getData();
+            int grantFlags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            if (grantFlags != 0) {
+                try {
+                    getContentResolver().takePersistableUriPermission(wallpaperUri, grantFlags);
+                } catch (SecurityException ignored) {
+                }
+            }
+            wallpaperUriString = wallpaperUri.toString();
+            preferences.edit().putString(PREF_WALLPAPER_URI, wallpaperUriString).apply();
+            renderWallpaper();
+            addLog("界面", "设置壁纸", wallpaperUri.getLastPathSegment() == null
+                    ? "" : wallpaperUri.getLastPathSegment());
+            Toast.makeText(this, "壁纸已应用", Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (requestCode != REQUEST_EXPORT_LOGS && requestCode != REQUEST_EXPORT_STOPWATCHES) {
             return;
         }
@@ -1670,6 +2012,9 @@ public class MainActivity extends Activity {
         String note = "";
         int color;
         long accumulatedMillis = 0;
+        int borderColor;
+        int cardBackgroundColor = 0;
+        int backgroundTransparencyPercent = 0;
         boolean running = false;
         long startedAtMillis = 0;
         final List<Lap> laps = new ArrayList<>();
@@ -1678,6 +2023,7 @@ public class MainActivity extends Activity {
             this.id = id;
             this.name = name;
             this.color = color;
+            this.borderColor = color;
         }
 
         long elapsedMillis(long now) {
@@ -1793,10 +2139,8 @@ public class MainActivity extends Activity {
 
                 Button rename = createButton("改名");
                 Button delete = createButton("删除");
-                Button color = createButton("颜色");
-                controls2.addView(color, new LinearLayout.LayoutParams(0, dp(48), 1));
                 LinearLayout.LayoutParams renameParams = new LinearLayout.LayoutParams(0, dp(48), 1);
-                renameParams.setMargins(dp(6), 0, dp(6), 0);
+                renameParams.setMargins(0, 0, dp(6), 0);
                 controls2.addView(rename, renameParams);
                 LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(0, dp(48), 1);
                 controls2.addView(delete, deleteParams);
@@ -1805,7 +2149,7 @@ public class MainActivity extends Activity {
                 laps.setSingleLine(false);
                 row.addView(laps);
 
-                holder = new RowHolder(row, name, note, time, status, toggle, lap, reset, color, rename, delete, laps);
+                holder = new RowHolder(row, name, note, time, status, toggle, lap, reset, rename, delete, laps);
                 row.setTag(holder);
                 convertView = row;
             } else {
@@ -1842,27 +2186,37 @@ public class MainActivity extends Activity {
 
             int vertical = compactList ? dp(10) : dp(14);
             holder.row.setPadding(dp(12), vertical, dp(12), vertical);
-            GradientDrawable bg = new GradientDrawable();
-            bg.setColor(surfaceColor);
-            bg.setCornerRadius(dp(8));
-            bg.setStroke(dp(2), item.color);
-            holder.row.setBackground(bg);
+            int cardColor = item.cardBackgroundColor == 0 ? surfaceColor : item.cardBackgroundColor;
+            holder.row.setBackground(createStopwatchCardBackground(
+                    cardColor, item.backgroundTransparencyPercent, item.borderColor
+            ));
 
-            styleButton(holder.toggle, item.running ? Color.rgb(216, 70, 70) : item.color, Color.WHITE);
+            int transparency = item.backgroundTransparencyPercent;
+            styleButton(holder.toggle, withTransparency(
+                    item.running ? Color.rgb(216, 70, 70) : item.color, transparency
+            ), Color.WHITE);
             int normalControlColor = darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244);
             styleButton(holder.lap,
-                    lapLimitReached ? Color.rgb(105, 110, 120) : normalControlColor,
+                    withTransparency(lapLimitReached ? Color.rgb(105, 110, 120) : normalControlColor, transparency),
                     lapLimitReached ? Color.rgb(225, 227, 231) : textColor);
-            styleButton(holder.reset, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
+            styleButton(holder.reset,
+                    withTransparency(darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), transparency),
+                    textColor);
             styleButton(holder.note, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-            styleButton(holder.color, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-            styleButton(holder.rename, darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), textColor);
-            styleButton(holder.delete, Color.rgb(153, 58, 65), Color.WHITE);
+            styleButton(holder.rename,
+                    withTransparency(darkMode ? Color.rgb(53, 61, 76) : Color.rgb(225, 232, 244), transparency),
+                    textColor);
+            styleButton(holder.delete, withTransparency(Color.rgb(153, 58, 65), transparency), Color.WHITE);
 
-            holder.toggle.setOnClickListener(v -> toggleStopwatch(item));
-            holder.lap.setOnClickListener(v -> addLap(item));
+            holder.toggle.setOnClickListener(v -> {
+                vibrateButtonClick(v);
+                toggleStopwatch(item);
+            });
+            holder.lap.setOnClickListener(v -> {
+                vibrateButtonClick(v);
+                addLap(item);
+            });
             holder.reset.setOnClickListener(v -> resetStopwatch(item));
-            holder.color.setOnClickListener(v -> chooseStopwatchColor(item));
             holder.rename.setOnClickListener(v -> renameStopwatch(item));
             holder.delete.setOnClickListener(v -> deleteStopwatch(item));
             holder.note.setOnClickListener(v -> showNoteDialog(item));
@@ -1905,7 +2259,6 @@ public class MainActivity extends Activity {
         final Button toggle;
         final Button lap;
         final Button reset;
-        final Button color;
         final Button rename;
         final Button delete;
         final TextView laps;
@@ -1920,7 +2273,6 @@ public class MainActivity extends Activity {
                 Button toggle,
                 Button lap,
                 Button reset,
-                Button color,
                 Button rename,
                 Button delete,
                 TextView laps
@@ -1933,7 +2285,6 @@ public class MainActivity extends Activity {
             this.toggle = toggle;
             this.lap = lap;
             this.reset = reset;
-            this.color = color;
             this.rename = rename;
             this.delete = delete;
             this.laps = laps;
